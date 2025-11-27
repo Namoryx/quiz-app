@@ -248,6 +248,7 @@ a);requestAnimationFrame(function(){g(document.body)})})}var l=["material-icons"
             </div>
 
             <div id="summary-stats" class="mb-6 space-y-4 text-left">
+            <div id="summary-stats" class="mb-6 space-y-3 text-left">
                 <div class="grid sm:grid-cols-3 gap-3">
                     <div class="p-4 rounded-2xl border border-slate-100 bg-slate-50">
                         <div class="text-xs font-bold text-slate-500 uppercase">정확도</div>
@@ -275,6 +276,19 @@ a);requestAnimationFrame(function(){g(document.body)})})}var l=["material-icons"
                                     <th class="py-3 pr-4">문제</th>
                                     <th class="py-3 px-4">정답</th>
                                     <th class="py-3 pl-4">해설</th>
+                <div class="bg-slate-50 border border-slate-100 rounded-2xl p-4 max-h-80 overflow-y-auto">
+                    <div class="flex items-center gap-2 mb-3 text-sm font-semibold text-slate-700">
+                        <span class="material-symbols-outlined text-base">table</span>
+                        이번 세트 풀이 기록
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full text-left text-xs sm:text-sm">
+                            <thead class="text-slate-500 uppercase font-bold">
+                                <tr>
+                                    <th class="py-2 pr-3">문제</th>
+                                    <th class="py-2 px-3">결과</th>
+                                    <th class="py-2 px-3">정답</th>
+                                    <th class="py-2 pl-3">해설</th>
                                 </tr>
                             </thead>
                             <tbody id="summary-table-body" class="divide-y divide-slate-100"></tbody>
@@ -366,6 +380,11 @@ const DataHandler = {
                         .then(() => this.parseExcel(data))
                         .then(resolve)
                         .catch(reject);
+                    if(typeof XLSX === 'undefined') {
+                        reject(new Error('Excel 라이브러리를 불러오지 못했습니다. 네트워크 상태를 확인하세요.'));
+                        return;
+                    }
+                    this.parseExcel(data).then(resolve).catch(reject);
                 } else {
                     this.parseCSV(data).then(resolve).catch(reject);
                 }
@@ -544,6 +563,12 @@ const app = {
             if(file) {
                 this.handleFile(file);
             }
+
+    init: function() { },
+
+        dropZone.addEventListener('drop', (e) => {
+            const file = e.dataTransfer.files && e.dataTransfer.files[0];
+            if(file) this.handleFile(file);
         });
 
         dropZone.addEventListener('click', () => fileInput.click());
@@ -562,6 +587,8 @@ const app = {
         };
         window.addEventListener('dragover', blockWindowDrop);
         window.addEventListener('drop', blockWindowDrop);
+        window.addEventListener('dragover', (e) => e.preventDefault());
+        window.addEventListener('drop', (e) => e.preventDefault());
     },
 
     handleFile: function(inputOrFile) {
@@ -750,6 +777,18 @@ const app = {
         for (const qIndex of shuffledPool) {
             if (session.length >= this.SESSION_SIZE) break;
             session.push(qIndex);
+        for (const qIndex of this.weakQueue) {
+            if (session.length >= this.SESSION_SIZE) break;
+            if (!this.db[qIndex].meta.mastered) {
+                session.push(qIndex);
+            }
+        }
+
+        while (session.length < this.SESSION_SIZE && this.currentIndex < this.db.length) {
+            if (!session.includes(this.currentIndex) && !this.db[this.currentIndex].meta.mastered) {
+                session.push(this.currentIndex);
+            }
+            this.currentIndex++;
         }
 
         this.currentSession = session;
@@ -772,6 +811,7 @@ const app = {
     },
 
     prepareQuestion: function(qBase, sourceIndex = null) {
+    prepareQuestion: function(qBase) {
         // Shuffle options for this session instance
         const opts = this.shuffle(qBase.options.map(o => ({...o})));
         return {
@@ -794,6 +834,10 @@ const app = {
         meta.correct_count++;
         meta.mastered = true;
         this.weakQueue = this.weakQueue.filter(idx => idx !== qIndex);
+        if (meta.wrong_count > 0 && meta.correct_count >= 1) {
+            meta.mastered = true;
+            this.weakQueue = this.weakQueue.filter(idx => idx !== qIndex);
+        }
     },
 
     handleOptionSelect: function(idx) {
@@ -812,6 +856,7 @@ const app = {
         if(this.mode === 'practice') {
             q.checked = true;
             const isCorrect = q.options[idx].isCorrect;
+            const qIndex = this.currentSession[this.currentSessionPos];
             const wasAwaiting = this.awaitingWrongContinue;
             this.awaitingWrongContinue = false;
             this.pendingWrongAckId = null;
@@ -1034,6 +1079,12 @@ const app = {
     loadBatch: function() {
         const built = this.buildSessionQuestions();
 
+        }
+    },
+
+loadBatch: function() {
+        const built = this.buildSessionQuestions();
+
         if(!built) {
             this.setSummaryState(true);
             if(this.lastSummaryData) this.renderSummaryStats(this.lastSummaryData);
@@ -1045,6 +1096,7 @@ const app = {
         this.pendingWrongAckId = null;
         this.awaitingWrongContinue = false;
         this.session = this.currentSession.map(idx => this.prepareQuestion(this.db[idx], idx));
+        this.session = this.currentSession.map(idx => this.prepareQuestion(this.db[idx]));
 
         this.currentSessionPos = 0;
         this.qIdx = 0;
@@ -1164,6 +1216,98 @@ const app = {
         this.renderSummaryStats(summaryData);
         this.lastSummaryData = summaryData;
 
+
+    nextBatch: function() {
+        if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
+        this.pendingWrongAckId = null;
+        this.awaitingWrongContinue = false;
+        const loaded = this.loadBatch();
+        if(loaded) {
+            this.setView('view-quiz');
+        }
+    },
+
+    advanceToNextQuestion: function() {
+        this.currentSessionPos++;
+        this.qIdx = this.currentSessionPos;
+
+        if(this.currentSessionPos >= this.session.length) {
+            this.showMidSummary();
+            return;
+        }
+
+        this.renderQuestion();
+    },
+
+    handlePracticeContinue: function() {
+        if(!this.awaitingWrongContinue) return;
+        this.awaitingWrongContinue = false;
+        this.pendingWrongAckId = null;
+        this.advanceToNextQuestion();
+    },
+
+    showMidSummary: function() {
+        if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
+        const uniqueWrongs = [...new Set(this.batchWrongIds)];
+        this.setSummaryState(false);
+
+        const total = this.session.length;
+        let correct = 0;
+        let wrong = 0;
+
+        const tableBody = document.getElementById('summary-table-body');
+        tableBody.innerHTML = '';
+
+        this.session.forEach((q, idx) => {
+            const answered = q.userAnswer !== null;
+            const correctIdx = q.options.findIndex(o => o.isCorrect);
+            const correctOpt = correctIdx >= 0 ? q.options[correctIdx] : null;
+            const isCorrect = answered && q.options[q.userAnswer].isCorrect;
+            if(isCorrect) correct++;
+            else wrong++;
+
+            const userLabel = answered ? String.fromCharCode(65 + q.userAnswer) : '미응답';
+            const correctLabel = correctOpt ? String.fromCharCode(65 + correctIdx) : '-';
+            const userText = answered && q.options[q.userAnswer] ? this.trimText(q.options[q.userAnswer].text, 80) : '';
+            const correctText = correctOpt ? this.trimText(correctOpt.text, 80) : '';
+            const explanation = this.trimText(q.explanation || '해설 없음', 180);
+
+            const row = document.createElement('tr');
+            row.className = 'align-top';
+            row.innerHTML = `
+                <td class="py-3 pr-3">
+                    <div class="text-[11px] sm:text-xs font-semibold text-slate-500">Q${idx + 1} · ID ${q.id}</div>
+                    <div class="text-sm text-slate-800 leading-snug">${this.trimText(q.text, 140)}</div>
+                </td>
+                <td class="py-3 px-3">
+                    <div class="flex items-center gap-1 font-semibold ${isCorrect ? 'text-green-600' : 'text-red-600'}">
+                        <span class="material-symbols-outlined text-base">${isCorrect ? 'check_circle' : 'cancel'}</span>
+                        ${isCorrect ? '정답' : '오답'}
+                    </div>
+                    <div class="text-[11px] sm:text-xs text-slate-500">선택: ${userLabel}${userText ? ' · ' + userText : ''}</div>
+                </td>
+                <td class="py-3 px-3">
+                    <div class="text-[11px] sm:text-xs font-semibold text-slate-600">${correctLabel}</div>
+                    <div class="text-[11px] sm:text-xs text-slate-500">${correctText}</div>
+                </td>
+                <td class="py-3 pl-3 text-[11px] sm:text-xs text-slate-700 whitespace-pre-line">${explanation}</td>
+            `;
+            tableBody.appendChild(row);
+        });
+
+        const accuracy = total ? Math.round((correct / total) * 100) : 0;
+        document.getElementById('summary-wrong-count').innerText = uniqueWrongs.length;
+        document.getElementById('summary-accuracy').innerText = `${correct}/${total} (${accuracy}%)`;
+        document.getElementById('summary-correct').innerText = correct;
+        document.getElementById('summary-wrong').innerText = wrong;
+
+        this.lastSummaryData = {
+            correct,
+            wrong,
+            total,
+            wrongCount: uniqueWrongs.length
+        };
+
         this.setView('view-summary');
     },
 
@@ -1176,6 +1320,7 @@ const app = {
         const pool = this.shuffle([...this.db]);
         const selected = pool.slice(0, 60);
         this.session = selected.map(raw => this.prepareQuestion(raw, raw.sourceIndex ?? null));
+        this.session = selected.map(raw => this.prepareQuestion(raw));
         this.currentSession = this.session.map((_, idx) => idx);
         this.currentSessionPos = 0;
         this.qIdx = 0;
