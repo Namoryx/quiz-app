@@ -230,7 +230,7 @@ a);requestAnimationFrame(function(){g(document.body)})})}var l=["material-icons"
 
     <!-- SCREEN: BATCH SUMMARY -->
     <div id="view-summary" class="hidden flex-grow flex-col items-center justify-center animate-slide-up text-center">
-        <div class="bg-white p-8 rounded-3xl shadow-xl border border-slate-200 max-w-md w-full">
+        <div class="bg-white p-8 rounded-3xl shadow-xl border border-slate-200 max-w-2xl w-full">
             <div id="summary-icon" class="w-16 h-16 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-4">
                 <span class="material-symbols-outlined text-3xl">refresh</span>
             </div>
@@ -239,6 +239,34 @@ a);requestAnimationFrame(function(){g(document.body)})})}var l=["material-icons"
                 이번 세트 오답: <span id="summary-wrong-count" class="font-bold text-red-500">0</span>개<br>
                 <span class="text-xs text-slate-400">틀린 문제는 다음 세트에 자동으로 포함됩니다.</span>
             </p>
+
+            <div id="summary-stats" class="mb-6 space-y-3 text-left">
+                <div class="grid sm:grid-cols-3 gap-3">
+                    <div class="p-4 rounded-2xl border border-slate-100 bg-slate-50">
+                        <div class="text-xs font-bold text-slate-500 uppercase">정확도</div>
+                        <div id="summary-accuracy" class="text-2xl font-extrabold text-slate-800">0/0 (0%)</div>
+                    </div>
+                    <div class="p-4 rounded-2xl border border-green-100 bg-green-50">
+                        <div class="text-xs font-bold text-green-600 uppercase">정답</div>
+                        <div id="summary-correct" class="text-2xl font-extrabold text-green-700">0</div>
+                    </div>
+                    <div class="p-4 rounded-2xl border border-red-100 bg-red-50">
+                        <div class="text-xs font-bold text-red-600 uppercase">오답</div>
+                        <div id="summary-wrong" class="text-2xl font-extrabold text-red-700">0</div>
+                    </div>
+                </div>
+
+                <div class="bg-slate-50 border border-slate-100 rounded-2xl p-4 max-h-80 overflow-y-auto">
+                    <div class="flex items-center gap-2 mb-3 text-sm font-semibold text-slate-700">
+                        <span class="material-symbols-outlined text-base">format_list_bulleted</span>
+                        이번 세트 풀이 기록
+                    </div>
+                    <div id="summary-list" class="space-y-2 text-sm text-slate-700">
+                        <!-- Filled via JS -->
+                    </div>
+                </div>
+            </div>
+
             <div class="flex flex-col gap-3">
                 <button id="summary-primary" class="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition shadow-lg" onclick="window.app.nextBatch()">
                     다음 세트 시작
@@ -624,6 +652,11 @@ const app = {
         return newArr;
     },
 
+    trimText: function(text = '', limit = 120) {
+        if(!text) return '';
+        return text.length > limit ? text.slice(0, limit) + '…' : text;
+    },
+
     prepareQuestion: function(qBase) {
         // Shuffle options for this session instance
         const opts = this.shuffle(qBase.options.map(o => ({...o})));
@@ -840,6 +873,8 @@ const app = {
         const detailEl = document.getElementById('summary-detail');
         const primaryBtn = document.getElementById('summary-primary');
         const homeBtn = document.getElementById('summary-home');
+        const statsBox = document.getElementById('summary-stats');
+        const listBox = document.getElementById('summary-list');
 
         if(isComplete) {
             iconEl.className = "w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-4";
@@ -850,18 +885,22 @@ const app = {
             primaryBtn.innerText = "홈으로";
             primaryBtn.onclick = () => this.goHome();
             homeBtn.classList.add('hidden');
+            statsBox.classList.add('hidden');
+            if(listBox) listBox.innerHTML = '';
         } else {
             iconEl.className = "w-16 h-16 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-4";
             iconEl.innerHTML = `<span class="material-symbols-outlined text-3xl">refresh</span>`;
             titleEl.innerText = "세트 완료";
-            detailEl.innerHTML = `이번 세트 오답: <span id="summary-wrong-count" class="font-bold text-red-500">0</span>개<br><span class="text-xs text-slate-400">틀린 문제는 다음 세트에 자동으로 포함됩니다.</span>`;
+            detailEl.innerHTML = `이번 세트 오답: <span id="summary-wrong-count" class="font-bold text-red-500">0</span>개<br><span class=\"text-xs text-slate-400\">틀린 문제는 다음 세트에 자동으로 포함됩니다.</span>`;
 
             primaryBtn.innerText = "다음 세트 시작";
             primaryBtn.onclick = () => this.nextBatch();
             homeBtn.classList.add('hidden');
+            statsBox.classList.remove('hidden');
         }
     },
 
+loadBatch: function() {
     loadBatch: function() {
         const built = this.buildSessionQuestions();
 
@@ -919,7 +958,53 @@ const app = {
         if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
         const uniqueWrongs = [...new Set(this.batchWrongIds)];
         this.setSummaryState(false);
+
+        const total = this.session.length;
+        let correct = 0;
+        let wrong = 0;
+
+        const listEl = document.getElementById('summary-list');
+        listEl.innerHTML = '';
+
+        this.session.forEach((q, idx) => {
+            const answered = q.userAnswer !== null;
+            const isCorrect = answered && q.options[q.userAnswer].isCorrect;
+            if(isCorrect) correct++;
+            else wrong++;
+
+            const correctIdx = q.options.findIndex(o => o.isCorrect);
+            const userLabel = answered ? String.fromCharCode(65 + q.userAnswer) : '미응답';
+            const correctLabel = correctIdx >= 0 ? String.fromCharCode(65 + correctIdx) : '-';
+            const stateClass = isCorrect ? 'bg-green-100 text-green-700 border-green-200' : 'bg-red-100 text-red-700 border-red-200';
+            const icon = isCorrect ? 'check_circle' : 'cancel';
+            const border = isCorrect ? 'border-green-100' : 'border-red-100';
+
+            const row = document.createElement('div');
+            row.className = `p-3 rounded-xl border ${border} bg-white shadow-sm`;
+            row.innerHTML = `
+                <div class="flex items-start gap-3">
+                    <div class="mt-0.5">
+                        <span class="material-symbols-outlined ${isCorrect ? 'text-green-500' : 'text-red-500'}">${icon}</span>
+                    </div>
+                    <div class="flex-1 space-y-1">
+                        <div class="flex items-center justify-between gap-2">
+                            <div class="text-xs font-semibold text-slate-500">Q${idx + 1} · ID ${q.id}</div>
+                            <span class="px-2 py-0.5 rounded-full text-xs font-bold ${stateClass}">${isCorrect ? '정답' : '오답'}</span>
+                        </div>
+                        <div class="text-sm text-slate-800 leading-snug">${this.trimText(q.text, 140)}</div>
+                        <div class="text-xs text-slate-500">정답 ${correctLabel} / 선택 ${userLabel}</div>
+                    </div>
+                </div>
+            `;
+            listEl.appendChild(row);
+        });
+
+        const accuracy = total ? Math.round((correct / total) * 100) : 0;
         document.getElementById('summary-wrong-count').innerText = uniqueWrongs.length;
+        document.getElementById('summary-accuracy').innerText = `${correct}/${total} (${accuracy}%)`;
+        document.getElementById('summary-correct').innerText = correct;
+        document.getElementById('summary-wrong').innerText = wrong;
+
         this.setView('view-summary');
     },
 
