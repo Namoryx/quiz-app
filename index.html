@@ -38,7 +38,7 @@ a);requestAnimationFrame(function(){g(document.body)})})}var l=["material-icons"
 
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Databricks Exam Prep (Smart Loader)</title>
+    <title>Databricks Exam Prep</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- SheetJS for Excel Support -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
@@ -380,63 +380,7 @@ const DataHandler = {
         if (typeof XLSX !== 'undefined') return Promise.resolve();
         if (this.sheetJsReady) return this.sheetJsReady;
 
-        const sources = [
-            'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js',
-            'https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js'
-        ];
-
-        this.sheetJsReady = new Promise((resolve, reject) => {
-            const tryLoad = (idx, tag = null) => {
-                if (typeof XLSX !== 'undefined') { resolve(); return; }
-                if (idx >= sources.length) {
-                    reject(new Error('Excel 라이브러리를 불러올 수 없습니다. 네트워크 상태를 확인하세요.'));
-                    return;
-                }
-
-                const script = tag || document.createElement('script');
-                script.src = sources[idx];
-                script.async = true;
-                script.crossOrigin = 'anonymous';
-                script.setAttribute('data-sheetjs-dynamic', '1');
-
-                const cleanup = () => {
-                    script.removeEventListener('load', onLoad);
-                    script.removeEventListener('error', onError);
-                };
-
-                const onLoad = () => {
-                    cleanup();
-                    script.dataset.loaded = '1';
-                    if (typeof XLSX !== 'undefined') resolve();
-                    else tryLoad(idx + 1);
-                };
-
-                const onError = () => { cleanup(); tryLoad(idx + 1); };
-
-                script.addEventListener('load', onLoad, { once: true });
-                script.addEventListener('error', onError, { once: true });
-
-                // If the script tag already exists, we may need to resolve immediately
-                if (script.readyState === 'complete' || script.readyState === 'loaded' || script.dataset.loaded === '1') {
-                    onLoad();
-                    return;
-                }
-
-                if (!tag) document.head.appendChild(script);
-            };
-
-            const existing = document.querySelector('script[data-sheetjs-dynamic]');
-            if (existing) {
-                if (existing.dataset.loaded === '1' && typeof XLSX !== 'undefined') {
-                    resolve();
-                } else {
-                    tryLoad(0, existing);
-                }
-            } else {
-                tryLoad(0);
-            }
-        });
-
+        this.sheetJsReady = Promise.reject(new Error('Excel 라이브러리를 불러올 수 없습니다. 새로고침 후 다시 시도하세요.'));
         return this.sheetJsReady;
     },
 
@@ -623,63 +567,47 @@ const app = {
 
     processRows: function(rows, sourceName) {
         try {
-            // Header Logic: Look for keywords
-            let headerRowIdx = -1;
-            let colMap = { id: -1, text: -1, options: [], correct: -1, exp: -1 };
+            const headers = (rows[0] || []).map(h => String(h ?? '').trim());
+            const normalized = headers.map(h => h.toLowerCase().replace(/\s+/g, ' '));
+            const required = [
+                'question number',
+                'question text',
+                'option 1',
+                'option 2',
+                'option 3',
+                'option 4',
+                'option 5',
+                'correct answer',
+                'answer explanation'
+            ];
 
-            // Scan first 10 rows for header
-            for(let i=0; i<Math.min(rows.length, 10); i++) {
-                const rowStr = rows[i].join(' ').toLowerCase();
-                if(rowStr.includes('question') && rowStr.includes('option')) {
-                    headerRowIdx = i;
-                    rows[i].forEach((col, idx) => {
-                        const c = String(col).toLowerCase().trim();
-                        if(c.includes('number') || c.includes('id')) colMap.id = idx;
-                        else if(c.includes('text') || c.includes('question')) colMap.text = idx;
-                        else if(c.includes('option')) colMap.options.push(idx);
-                        else if(c.includes('correct')) colMap.correct = idx;
-                        else if(c.includes('explanation') || c.includes('reason')) colMap.exp = idx;
-                    });
-                    break;
-                }
+            const headerMatches = required.every((h, idx) => normalized[idx] === h);
+            if (!headerMatches) {
+                throw new Error('헤더 형식이 올바르지 않습니다. "Question Number, Question Text, Option 1~5, Correct Answer, Answer explanation" 순서로 업로드하세요.');
             }
 
-            // Fallback for fixed format
-            if(headerRowIdx === -1 || colMap.text === -1) {
-                // Heuristic: If row 0 has strings 'Question', 'Option', assume it's header
-                // else assume data starts at row 0 (or 1 if row 0 looks like string headers)
-                if (rows[0] && String(rows[0][1]).includes('Question')) {
-                    headerRowIdx = 0;
-                } else {
-                    headerRowIdx = -1; // No header, data starts at 0
-                }
-                colMap = { id:0, text:1, options:[2,3,4,5,6], correct:7, exp:8 };
-            }
-
+            const colMap = { id: 0, text: 1, options: [2,3,4,5,6], correct: 7, exp: 8 };
             this.db = [];
-            for(let i = headerRowIdx + 1; i < rows.length; i++) {
+
+            for(let i = 1; i < rows.length; i++) {
                 const row = rows[i];
                 if(!row || row.length < 3) continue;
 
-                // Extract Options
                 const opts = [];
                 colMap.options.forEach(idx => {
-                    let val = row[idx];
+                    const val = row[idx];
                     if(val !== undefined && val !== null && String(val).trim() !== '') {
-                        // Clean "A. " "1. " prefixes
-                        let txt = String(val).trim().replace(/^[A-Ea-e1-5][.)\]]\s+/, ''); 
-                        opts.push(txt);
+                        opts.push(String(val).trim());
                     }
                 });
 
-                // Extract Correct Answer
                 let correctVal = row[colMap.correct];
                 let correctIdx = -1;
-                
-                if (correctVal !== undefined) {
+
+                if (correctVal !== undefined && correctVal !== null) {
                     correctVal = String(correctVal).trim();
                     if(!isNaN(parseInt(correctVal))) {
-                        correctIdx = parseInt(correctVal) - 1;
+                        correctIdx = parseInt(correctVal, 10) - 1;
                     } else {
                         const charCode = correctVal.toUpperCase().charCodeAt(0);
                         if(charCode >= 65 && charCode <= 69) correctIdx = charCode - 65;
@@ -691,7 +619,6 @@ const app = {
                     isCorrect: idx === correctIdx
                 }));
 
-                // Only add if has options
                 if(optionObjects.length > 0) {
                     this.db.push({
                         id: row[colMap.id] || (i),
@@ -709,7 +636,6 @@ const app = {
 
             if(this.db.length === 0) throw new Error("유효한 문제를 찾을 수 없습니다.");
 
-            // Success UI
             document.getElementById('data-status').classList.remove('hidden');
             document.getElementById('data-status').classList.add('flex');
             document.getElementById('data-status-text').innerText = `${sourceName} 로드 완료 (${this.db.length}문제)`;
