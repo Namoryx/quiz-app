@@ -235,7 +235,7 @@ a);requestAnimationFrame(function(){g(document.body)})})}var l=["material-icons"
                 <span class="material-symbols-outlined text-3xl">refresh</span>
             </div>
             <h2 id="summary-title" class="text-2xl font-bold text-slate-800 mb-2">세트 완료</h2>
-            <p id="summary-detail" class="text-slate-600 mb-6">
+            <p id="summary-detail" class="text-slate-600 mb-4">
                 이번 세트 오답: <span id="summary-wrong-count" class="font-bold text-red-500">0</span>개<br>
                 <span class="text-xs text-slate-400">틀린 문제는 다음 세트에 자동으로 포함됩니다.</span>
             </p>
@@ -355,6 +355,10 @@ const DataHandler = {
                 const data = e.target.result;
                 
                 if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls')) {
+                    if(typeof XLSX === 'undefined') {
+                        reject(new Error('Excel 라이브러리를 불러오지 못했습니다. 네트워크 상태를 확인하세요.'));
+                        return;
+                    }
                     this.parseExcel(data).then(resolve).catch(reject);
                 } else {
                     this.parseCSV(data).then(resolve).catch(reject);
@@ -471,13 +475,27 @@ const app = {
 
     init: function() { },
 
-    handleFile: function(input) {
-        const file = input.files[0];
+        dropZone.addEventListener('drop', (e) => {
+            const file = e.dataTransfer.files && e.dataTransfer.files[0];
+            if(file) this.handleFile(file);
+        });
+
+        dropZone.addEventListener('click', () => fileInput.click());
+
+        window.addEventListener('dragover', (e) => e.preventDefault());
+        window.addEventListener('drop', (e) => e.preventDefault());
+    },
+
+    handleFile: function(inputOrFile) {
+        const file = inputOrFile instanceof File ? inputOrFile : (inputOrFile?.files ? inputOrFile.files[0] : null);
         if(!file) return;
-        
+
         DataHandler.readFile(file)
             .then(rows => this.processRows(rows, file.name))
-            .catch(e => this.showError(e.message));
+            .catch(e => this.showError(e.message))
+            .finally(() => {
+                if(inputOrFile && !(inputOrFile instanceof File)) inputOrFile.value = '';
+            });
     },
 
     loadDefaultData: function() {
@@ -914,6 +932,7 @@ loadBatch: function() {
 
         if(!built) {
             this.setSummaryState(true);
+            if(this.lastSummaryData) this.renderSummaryStats(this.lastSummaryData);
             this.setView('view-summary');
             return false;
         }
