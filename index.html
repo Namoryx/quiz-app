@@ -231,17 +231,22 @@ a);requestAnimationFrame(function(){g(document.body)})})}var l=["material-icons"
     <!-- SCREEN: BATCH SUMMARY -->
     <div id="view-summary" class="hidden flex-grow flex-col items-center justify-center animate-slide-up text-center">
         <div class="bg-white p-8 rounded-3xl shadow-xl border border-slate-200 max-w-md w-full">
-            <div class="w-16 h-16 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-4">
+            <div id="summary-icon" class="w-16 h-16 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-4">
                 <span class="material-symbols-outlined text-3xl">refresh</span>
             </div>
-            <h2 class="text-2xl font-bold text-slate-800 mb-2">세트 완료</h2>
-            <p class="text-slate-600 mb-6">
+            <h2 id="summary-title" class="text-2xl font-bold text-slate-800 mb-2">세트 완료</h2>
+            <p id="summary-detail" class="text-slate-600 mb-6">
                 이번 세트 오답: <span id="summary-wrong-count" class="font-bold text-red-500">0</span>개<br>
                 <span class="text-xs text-slate-400">틀린 문제는 다음 세트에 자동으로 포함됩니다.</span>
             </p>
-            <button class="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition shadow-lg" onclick="window.app.nextBatch()">
-                다음 세트 시작
-            </button>
+            <div class="flex flex-col gap-3">
+                <button id="summary-primary" class="w-full py-3 bg-indigo-600 text-white rounded-xl font-bold hover:bg-indigo-700 transition shadow-lg" onclick="window.app.nextBatch()">
+                    다음 세트 시작
+                </button>
+                <button id="summary-home" class="hidden w-full py-3 bg-slate-800 text-white rounded-xl font-bold hover:bg-slate-900 transition shadow" onclick="window.app.goHome()">
+                    홈으로
+                </button>
+            </div>
         </div>
     </div>
 
@@ -757,6 +762,34 @@ const app = {
         this.updateStatus("Practice", "Batch");
     },
 
+    setSummaryState: function(isComplete = false) {
+        const iconEl = document.getElementById('summary-icon');
+        const titleEl = document.getElementById('summary-title');
+        const detailEl = document.getElementById('summary-detail');
+        const primaryBtn = document.getElementById('summary-primary');
+        const homeBtn = document.getElementById('summary-home');
+
+        if(isComplete) {
+            iconEl.className = "w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-4";
+            iconEl.innerHTML = `<span class="material-symbols-outlined text-3xl">task_alt</span>`;
+            titleEl.innerText = "모든 문제를 마쳤습니다";
+            detailEl.innerHTML = "남은 문제가 없습니다.<br><span class=\"text-xs text-slate-400\">홈으로 돌아가 새 연습을 시작하세요.</span>";
+
+            primaryBtn.innerText = "홈으로";
+            primaryBtn.onclick = () => this.goHome();
+            homeBtn.classList.add('hidden');
+        } else {
+            iconEl.className = "w-16 h-16 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-4";
+            iconEl.innerHTML = `<span class="material-symbols-outlined text-3xl">refresh</span>`;
+            titleEl.innerText = "세트 완료";
+            detailEl.innerHTML = `이번 세트 오답: <span id="summary-wrong-count" class="font-bold text-red-500">0</span>개<br><span class="text-xs text-slate-400">틀린 문제는 다음 세트에 자동으로 포함됩니다.</span>`;
+
+            primaryBtn.innerText = "다음 세트 시작";
+            primaryBtn.onclick = () => this.nextBatch();
+            homeBtn.classList.add('hidden');
+        }
+    },
+
     loadBatch: function() {
         const BATCH_SIZE = 10;
         const batchIds = [];
@@ -771,7 +804,11 @@ const app = {
             batchIds.push(...this.practiceQueue.splice(0, need));
         }
 
-        if(batchIds.length === 0) return alert("모든 문제를 마쳤습니다!");
+        if(batchIds.length === 0) {
+            this.setSummaryState(true);
+            this.setView('view-summary');
+            return false;
+        }
 
         this.batchWrongIds = [];
         this.pendingWrongAckId = null;
@@ -782,6 +819,7 @@ const app = {
 
         this.qIdx = 0;
         this.renderQuestion();
+        return true;
     },
 
     finishBatch: function() {
@@ -789,6 +827,7 @@ const app = {
         this.pendingWrongAckId = null;
         const uniqueWrongs = [...new Set(this.batchWrongIds)];
         this.retryQueue.unshift(...uniqueWrongs); // Re-queue wrongs immediately
+        this.setSummaryState(false);
         document.getElementById('summary-wrong-count').innerText = uniqueWrongs.length;
         this.setView('view-summary');
     },
