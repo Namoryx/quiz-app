@@ -240,6 +240,14 @@ a);requestAnimationFrame(function(){g(document.body)})})}var l=["material-icons"
                 <span class="text-xs text-slate-400">틀린 문제는 다음 세트에 자동으로 포함됩니다.</span>
             </p>
 
+            <div id="summary-progress-wrap" class="mb-6 text-left space-y-2">
+                <div id="summary-progress-text" class="text-sm font-semibold text-slate-700">전체 진행 0/0 (0%)</div>
+                <div class="w-full h-2 rounded-full bg-slate-100 overflow-hidden">
+                    <div id="summary-progress-bar" class="h-2 bg-indigo-500 rounded-full transition-all" style="width: 0%"></div>
+                </div>
+            </div>
+
+            <div id="summary-stats" class="mb-6 space-y-4 text-left">
             <div id="summary-stats" class="mb-6 space-y-3 text-left">
                 <div class="grid sm:grid-cols-3 gap-3">
                     <div class="p-4 rounded-2xl border border-slate-100 bg-slate-50">
@@ -256,6 +264,18 @@ a);requestAnimationFrame(function(){g(document.body)})})}var l=["material-icons"
                     </div>
                 </div>
 
+                <div class="bg-slate-50 border border-slate-100 rounded-2xl p-6 sm:p-7 max-h-[70vh] overflow-y-auto">
+                    <div class="flex items-center gap-2 mb-5 text-lg font-extrabold text-slate-800">
+                        <span class="material-symbols-outlined text-base">table</span>
+                        이번 세트 오답 기록
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="min-w-full text-left text-base sm:text-lg">
+                            <thead class="text-slate-700 uppercase font-bold border-b border-slate-200 text-sm sm:text-base">
+                                <tr>
+                                    <th class="py-3 pr-4">문제</th>
+                                    <th class="py-3 px-4">정답</th>
+                                    <th class="py-3 pl-4">해설</th>
                 <div class="bg-slate-50 border border-slate-100 rounded-2xl p-4 max-h-80 overflow-y-auto">
                     <div class="flex items-center gap-2 mb-3 text-sm font-semibold text-slate-700">
                         <span class="material-symbols-outlined text-base">table</span>
@@ -345,6 +365,7 @@ df = spark.read.format(""parquet"").load(f""/mnt/source/{date}"")
  * Unified CSV Parser (supporting EUC-KR) and Excel Handler (via SheetJS)
  */
 const DataHandler = {
+    sheetJsReady: null,
     // Reads file as ArrayBuffer, detects encoding for CSV or uses SheetJS for Excel
     readFile: function(file) {
         return new Promise((resolve, reject) => {
@@ -353,8 +374,12 @@ const DataHandler = {
 
             reader.onload = (e) => {
                 const data = e.target.result;
-                
+
                 if (fileName.endsWith('.xlsx') || fileName.endsWith('.xls')) {
+                    this.ensureSheetJS()
+                        .then(() => this.parseExcel(data))
+                        .then(resolve)
+                        .catch(reject);
                     if(typeof XLSX === 'undefined') {
                         reject(new Error('Excel 라이브러리를 불러오지 못했습니다. 네트워크 상태를 확인하세요.'));
                         return;
@@ -368,6 +393,36 @@ const DataHandler = {
             reader.onerror = () => reject(new Error("파일 읽기 실패"));
             reader.readAsArrayBuffer(file);
         });
+    },
+
+    ensureSheetJS: function() {
+        if (typeof XLSX !== 'undefined') return Promise.resolve();
+        if (this.sheetJsReady) return this.sheetJsReady;
+
+        this.sheetJsReady = new Promise((resolve, reject) => {
+            const existing = document.querySelector('script[data-sheetjs-dynamic]');
+            if (existing) {
+                existing.addEventListener('load', () => {
+                    if (typeof XLSX !== 'undefined') resolve();
+                    else reject(new Error('Excel 라이브러리를 불러오지 못했습니다.'));
+                }, { once: true });
+                existing.addEventListener('error', () => reject(new Error('Excel 라이브러리 로드 실패')), { once: true });
+                return;
+            }
+
+            const script = document.createElement('script');
+            script.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';
+            script.async = true;
+            script.setAttribute('data-sheetjs-dynamic', '1');
+            script.onload = () => {
+                if (typeof XLSX !== 'undefined') resolve();
+                else reject(new Error('Excel 라이브러리를 불러오지 못했습니다.'));
+            };
+            script.onerror = () => reject(new Error('Excel 라이브러리를 불러올 수 없습니다. 네트워크 상태를 확인하세요.'));
+            document.head.appendChild(script);
+        });
+
+        return this.sheetJsReady;
     },
 
     parseExcel: function(arrayBuffer) {
@@ -465,6 +520,8 @@ const app = {
     currentSessionPos: 0,
     SESSION_SIZE: 10,
     currentIndex: 0,
+    seenQuestions: new Set(),
+    totalSeen: 0,
     awaitingWrongContinue: false,
     lastAnsweredIndex: null,
     pendingWrongAckId: null,
@@ -472,6 +529,40 @@ const app = {
     timeLeft: 0,
     autoAdvanceTimer: null,
     lastSummaryData: null,
+
+    init: function() {
+        this.attachUploadHandlers();
+    },
+
+    attachUploadHandlers: function() {
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+        if(!dropZone || !fileInput) return;
+
+        const highlight = () => dropZone.classList.add('ring-2', 'ring-blue-200', 'bg-blue-50');
+        const unhighlight = () => dropZone.classList.remove('ring-2', 'ring-blue-200', 'bg-blue-50');
+
+        ['dragenter', 'dragover'].forEach(evt => {
+            dropZone.addEventListener(evt, (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+                highlight();
+            });
+        });
+        ['dragleave', 'drop'].forEach(evt => {
+            dropZone.addEventListener(evt, (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                unhighlight();
+            });
+        });
+
+        dropZone.addEventListener('drop', (e) => {
+            const file = e.dataTransfer?.files && e.dataTransfer.files[0];
+            if(file) {
+                this.handleFile(file);
+            }
 
     init: function() { },
 
@@ -482,6 +573,20 @@ const app = {
 
         dropZone.addEventListener('click', () => fileInput.click());
 
+        fileInput.addEventListener('change', (e) => {
+            if(e.target?.files?.length) {
+                this.handleFile(e.target);
+            }
+        });
+
+        const blockWindowDrop = (e) => {
+            if(!dropZone.contains(e.target)) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+        };
+        window.addEventListener('dragover', blockWindowDrop);
+        window.addEventListener('drop', blockWindowDrop);
         window.addEventListener('dragover', (e) => e.preventDefault());
         window.addEventListener('drop', (e) => e.preventDefault());
     },
@@ -630,6 +735,8 @@ const app = {
         this.currentSession = [];
         this.currentSessionPos = 0;
         this.currentIndex = 0;
+        this.seenQuestions = new Set();
+        this.totalSeen = 0;
         this.weakQueue = [];
         if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
         if(this.timer) clearInterval(this.timer);
@@ -653,6 +760,23 @@ const app = {
     buildSessionQuestions: function() {
         const session = [];
 
+        const weakCandidates = this.shuffle(this.weakQueue.filter(qIndex => !this.db[qIndex].meta.mastered));
+        for (const qIndex of weakCandidates) {
+            if (session.length >= this.SESSION_SIZE) break;
+            session.push(qIndex);
+        }
+
+        const pool = [];
+        this.db.forEach((q, idx) => {
+            if (!q.meta.mastered && !session.includes(idx)) {
+                pool.push(idx);
+            }
+        });
+
+        const shuffledPool = this.shuffle(pool);
+        for (const qIndex of shuffledPool) {
+            if (session.length >= this.SESSION_SIZE) break;
+            session.push(qIndex);
         for (const qIndex of this.weakQueue) {
             if (session.length >= this.SESSION_SIZE) break;
             if (!this.db[qIndex].meta.mastered) {
@@ -686,11 +810,13 @@ const app = {
         return text.length > limit ? text.slice(0, limit) + '…' : text;
     },
 
+    prepareQuestion: function(qBase, sourceIndex = null) {
     prepareQuestion: function(qBase) {
         // Shuffle options for this session instance
         const opts = this.shuffle(qBase.options.map(o => ({...o})));
         return {
             ...qBase,
+            sourceIndex: sourceIndex,
             options: opts,
             userAnswer: null,
             checked: false
@@ -706,6 +832,8 @@ const app = {
     markCorrect: function(qIndex) {
         const meta = this.db[qIndex].meta;
         meta.correct_count++;
+        meta.mastered = true;
+        this.weakQueue = this.weakQueue.filter(idx => idx !== qIndex);
         if (meta.wrong_count > 0 && meta.correct_count >= 1) {
             meta.mastered = true;
             this.weakQueue = this.weakQueue.filter(idx => idx !== qIndex);
@@ -718,6 +846,12 @@ const app = {
 
         q.userAnswer = idx;
         this.lastAnsweredIndex = this.currentSessionPos;
+
+        const qIndex = this.currentSession[this.currentSessionPos];
+        if(!this.seenQuestions.has(qIndex)) {
+            this.seenQuestions.add(qIndex);
+            this.totalSeen = this.seenQuestions.size;
+        }
 
         if(this.mode === 'practice') {
             q.checked = true;
@@ -880,11 +1014,14 @@ const app = {
     startPractice: function() {
         this.mode = 'practice';
         this.currentIndex = 0;
+        this.totalSeen = 0;
+        this.seenQuestions = new Set();
         this.awaitingWrongContinue = false;
         this.lastAnsweredIndex = null;
         this.weakQueue = [];
         this.batchWrongIds = [];
         this.pendingWrongAckId = null;
+        this.lastSummaryData = null;
         this.db.forEach(q => {
             if(!q.meta) q.meta = {};
             q.meta.correct_count = 0;
@@ -903,6 +1040,7 @@ const app = {
         const primaryBtn = document.getElementById('summary-primary');
         const homeBtn = document.getElementById('summary-home');
         const statsBox = document.getElementById('summary-stats');
+        const progressBox = document.getElementById('summary-progress-wrap');
 
         if(isComplete) {
             iconEl.className = "w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-4";
@@ -914,6 +1052,7 @@ const app = {
             primaryBtn.onclick = () => this.goHome();
             homeBtn.classList.add('hidden');
             statsBox.classList.remove('hidden');
+            progressBox.classList.remove('hidden');
         } else {
             iconEl.className = "w-16 h-16 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-4";
             iconEl.innerHTML = `<span class="material-symbols-outlined text-3xl">refresh</span>`;
@@ -924,6 +1063,22 @@ const app = {
             primaryBtn.onclick = () => this.nextBatch();
             homeBtn.classList.add('hidden');
             statsBox.classList.remove('hidden');
+            progressBox.classList.remove('hidden');
+        }
+    },
+
+    renderSummaryStats: function(data) {
+        document.getElementById('summary-wrong-count').innerText = data.wrongCount;
+        document.getElementById('summary-accuracy').innerText = `${data.correct}/${data.total} (${data.accuracy}%)`;
+        document.getElementById('summary-correct').innerText = data.correct;
+        document.getElementById('summary-wrong').innerText = data.wrong;
+        document.getElementById('summary-progress-text').innerText = `전체 진행 ${data.seen}/${data.totalQuestions} (${data.progress}%)`;
+        document.getElementById('summary-progress-bar').style.width = `${data.progress}%`;
+    },
+
+    loadBatch: function() {
+        const built = this.buildSessionQuestions();
+
         }
     },
 
@@ -940,6 +1095,7 @@ loadBatch: function() {
         this.batchWrongIds = [];
         this.pendingWrongAckId = null;
         this.awaitingWrongContinue = false;
+        this.session = this.currentSession.map(idx => this.prepareQuestion(this.db[idx], idx));
         this.session = this.currentSession.map(idx => this.prepareQuestion(this.db[idx]));
 
         this.currentSessionPos = 0;
@@ -951,6 +1107,115 @@ loadBatch: function() {
     finishBatch: function() {
         this.showMidSummary();
     },
+
+    nextBatch: function() {
+        if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
+        this.pendingWrongAckId = null;
+        this.awaitingWrongContinue = false;
+        const loaded = this.loadBatch();
+        if(loaded) {
+            this.setView('view-quiz');
+        }
+    },
+
+    advanceToNextQuestion: function() {
+        this.currentSessionPos++;
+        this.qIdx = this.currentSessionPos;
+
+        if(this.currentSessionPos >= this.session.length) {
+            this.showMidSummary();
+            return;
+        }
+
+        this.renderQuestion();
+    },
+
+    handlePracticeContinue: function() {
+        if(!this.awaitingWrongContinue) return;
+        this.awaitingWrongContinue = false;
+        this.pendingWrongAckId = null;
+        this.advanceToNextQuestion();
+    },
+
+    showMidSummary: function() {
+        if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
+        const uniqueWrongs = [...new Set(this.batchWrongIds)];
+        this.setSummaryState(false);
+
+        const total = this.session.length;
+        let correct = 0;
+        let wrong = 0;
+
+        const tableBody = document.getElementById('summary-table-body');
+        tableBody.innerHTML = '';
+
+        const wrongSet = new Set(uniqueWrongs);
+        const wrongRows = this.session.filter(q => wrongSet.has(q.sourceIndex));
+
+        this.session.forEach((q) => {
+            const answered = q.userAnswer !== null;
+            const isCorrect = answered && q.options[q.userAnswer].isCorrect;
+            if(isCorrect) correct++;
+            else wrong++;
+        });
+
+        if(wrongRows.length === 0) {
+            const row = document.createElement('tr');
+            row.innerHTML = `
+                <td colspan="3" class="py-6 text-center text-base sm:text-lg text-slate-500">이번 세트에서 틀린 문제가 없습니다. 계속 진행해볼까요?</td>
+            `;
+            tableBody.appendChild(row);
+        } else {
+            wrongRows.forEach((q, idx) => {
+                const answered = q.userAnswer !== null;
+                const correctIdx = q.options.findIndex(o => o.isCorrect);
+                const correctOpt = correctIdx >= 0 ? q.options[correctIdx] : null;
+                const userLabel = answered ? String.fromCharCode(65 + q.userAnswer) : '미응답';
+                const correctLabel = correctOpt ? String.fromCharCode(65 + correctIdx) : '-';
+                const userText = answered && q.options[q.userAnswer] ? this.trimText(q.options[q.userAnswer].text, 120) : '';
+                const correctText = correctOpt ? this.trimText(correctOpt.text, 120) : '';
+                const explanation = this.trimText(q.explanation || '해설 없음', 220);
+
+                const row = document.createElement('tr');
+                row.className = 'align-top';
+                row.innerHTML = `
+                    <td class="py-5 pr-4">
+                        <div class="text-sm sm:text-base font-semibold text-red-600 flex items-center gap-2">
+                            <span class="material-symbols-outlined text-base">report</span>
+                            Q${idx + 1} · ID ${q.id}
+                        </div>
+                        <div class="text-base sm:text-lg text-slate-800 leading-snug mt-2">${this.trimText(q.text, 200)}</div>
+                        <div class="text-sm sm:text-base text-slate-600 mt-2">선택: ${userLabel}${userText ? ' · ' + userText : ''}</div>
+                    </td>
+                    <td class="py-5 px-4">
+                        <div class="text-base sm:text-lg font-semibold text-slate-800">${correctLabel}</div>
+                        <div class="text-sm sm:text-base text-slate-600">${correctText}</div>
+                    </td>
+                    <td class="py-5 pl-4 text-sm sm:text-base text-slate-700 whitespace-pre-line leading-relaxed">${explanation}</td>
+                `;
+                tableBody.appendChild(row);
+            });
+        }
+
+        const accuracy = total ? Math.round((correct / total) * 100) : 0;
+        const totalQuestions = this.db.length;
+        const seen = Math.min(this.totalSeen, totalQuestions);
+        const progress = totalQuestions ? Math.round((seen / totalQuestions) * 100) : 0;
+
+        const summaryData = {
+            correct,
+            wrong,
+            total,
+            accuracy,
+            wrongCount: uniqueWrongs.length,
+            seen,
+            totalQuestions,
+            progress
+        };
+
+        this.renderSummaryStats(summaryData);
+        this.lastSummaryData = summaryData;
+
 
     nextBatch: function() {
         if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
@@ -1054,6 +1319,7 @@ loadBatch: function() {
         this.setView('view-quiz');
         const pool = this.shuffle([...this.db]);
         const selected = pool.slice(0, 60);
+        this.session = selected.map(raw => this.prepareQuestion(raw, raw.sourceIndex ?? null));
         this.session = selected.map(raw => this.prepareQuestion(raw));
         this.currentSession = this.session.map((_, idx) => idx);
         this.currentSessionPos = 0;
