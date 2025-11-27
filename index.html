@@ -171,7 +171,7 @@ a);requestAnimationFrame(function(){g(document.body)})})}var l=["material-icons"
                         <span class="material-symbols-outlined text-orange-500 bg-orange-50 p-2 rounded-lg">timer</span>
                         <span class="font-bold text-slate-800">시험 모드</span>
                     </div>
-                    <p class="text-xs text-slate-500">랜덤 60문제. 시간 제한(120분). 최종 점수 확인.</p>
+                    <p class="text-xs text-slate-500">랜덤 30문제. 시간 제한(30분). 최종 점수 확인.</p>
                 </button>
             </div>
         </div>
@@ -1141,7 +1141,7 @@ const app = {
         this.mode = 'exam';
         this.setView('view-quiz');
         const pool = this.shuffle([...this.db]);
-        const selected = pool.slice(0, 60);
+        const selected = pool.slice(0, 30);
         this.session = selected.map(raw => this.prepareQuestion(raw, raw.sourceIndex ?? null));
         this.currentSession = this.session.map((_, idx) => idx);
         this.currentSessionPos = 0;
@@ -1151,7 +1151,7 @@ const app = {
     },
 
     startTimer: function() {
-        this.timeLeft = 120 * 60;
+        this.timeLeft = 30 * 60;
         if(this.timer) clearInterval(this.timer);
         this.updateTimerDisplay();
         this.timer = setInterval(() => {
