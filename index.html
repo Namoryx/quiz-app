@@ -240,13 +240,6 @@ a);requestAnimationFrame(function(){g(document.body)})})}var l=["material-icons"
                 <span class="text-xs text-slate-400">틀린 문제는 다음 세트에 자동으로 포함됩니다.</span>
             </p>
 
-            <div id="summary-progress-wrap" class="mb-6 text-left space-y-2">
-                <div id="summary-progress-text" class="text-sm font-semibold text-slate-700">전체 진행 0/0 (0%)</div>
-                <div class="w-full h-2 rounded-full bg-slate-100 overflow-hidden">
-                    <div id="summary-progress-bar" class="h-2 bg-indigo-500 rounded-full transition-all" style="width: 0%"></div>
-                </div>
-            </div>
-
             <div id="summary-stats" class="mb-6 space-y-3 text-left">
                 <div class="grid sm:grid-cols-3 gap-3">
                     <div class="p-4 rounded-2xl border border-slate-100 bg-slate-50">
@@ -480,24 +473,7 @@ const app = {
     autoAdvanceTimer: null,
     lastSummaryData: null,
 
-    init: function() {
-        this.attachUploadHandlers();
-    },
-
-    attachUploadHandlers: function() {
-        const dropZone = document.getElementById('drop-zone');
-        const fileInput = document.getElementById('file-input');
-        if(!dropZone || !fileInput) return;
-
-        const highlight = () => dropZone.classList.add('ring-2', 'ring-blue-200', 'bg-blue-50');
-        const unhighlight = () => dropZone.classList.remove('ring-2', 'ring-blue-200', 'bg-blue-50');
-
-        ['dragenter', 'dragover'].forEach(evt => {
-            dropZone.addEventListener(evt, (e) => { e.preventDefault(); highlight(); });
-        });
-        ['dragleave', 'drop'].forEach(evt => {
-            dropZone.addEventListener(evt, (e) => { e.preventDefault(); unhighlight(); });
-        });
+    init: function() { },
 
         dropZone.addEventListener('drop', (e) => {
             const file = e.dataTransfer.files && e.dataTransfer.files[0];
@@ -909,7 +885,6 @@ const app = {
         this.weakQueue = [];
         this.batchWrongIds = [];
         this.pendingWrongAckId = null;
-        this.lastSummaryData = null;
         this.db.forEach(q => {
             if(!q.meta) q.meta = {};
             q.meta.correct_count = 0;
@@ -928,7 +903,6 @@ const app = {
         const primaryBtn = document.getElementById('summary-primary');
         const homeBtn = document.getElementById('summary-home');
         const statsBox = document.getElementById('summary-stats');
-        const progressBox = document.getElementById('summary-progress-wrap');
 
         if(isComplete) {
             iconEl.className = "w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto mb-4";
@@ -940,7 +914,6 @@ const app = {
             primaryBtn.onclick = () => this.goHome();
             homeBtn.classList.add('hidden');
             statsBox.classList.remove('hidden');
-            progressBox.classList.remove('hidden');
         } else {
             iconEl.className = "w-16 h-16 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto mb-4";
             iconEl.innerHTML = `<span class="material-symbols-outlined text-3xl">refresh</span>`;
@@ -951,20 +924,10 @@ const app = {
             primaryBtn.onclick = () => this.nextBatch();
             homeBtn.classList.add('hidden');
             statsBox.classList.remove('hidden');
-            progressBox.classList.remove('hidden');
         }
     },
 
-    renderSummaryStats: function(data) {
-        document.getElementById('summary-wrong-count').innerText = data.wrongCount;
-        document.getElementById('summary-accuracy').innerText = `${data.correct}/${data.total} (${data.accuracy}%)`;
-        document.getElementById('summary-correct').innerText = data.correct;
-        document.getElementById('summary-wrong').innerText = data.wrong;
-        document.getElementById('summary-progress-text').innerText = `전체 진행 ${data.seen}/${data.totalQuestions} (${data.progress}%)`;
-        document.getElementById('summary-progress-bar').style.width = `${data.progress}%`;
-    },
-
-    loadBatch: function() {
+loadBatch: function() {
         const built = this.buildSessionQuestions();
 
         if(!built) {
@@ -1068,23 +1031,17 @@ const app = {
         });
 
         const accuracy = total ? Math.round((correct / total) * 100) : 0;
-        const totalQuestions = this.db.length;
-        const seen = Math.min(this.currentIndex, totalQuestions);
-        const progress = totalQuestions ? Math.round((seen / totalQuestions) * 100) : 0;
+        document.getElementById('summary-wrong-count').innerText = uniqueWrongs.length;
+        document.getElementById('summary-accuracy').innerText = `${correct}/${total} (${accuracy}%)`;
+        document.getElementById('summary-correct').innerText = correct;
+        document.getElementById('summary-wrong').innerText = wrong;
 
-        const summaryData = {
+        this.lastSummaryData = {
             correct,
             wrong,
             total,
-            accuracy,
-            wrongCount: uniqueWrongs.length,
-            seen,
-            totalQuestions,
-            progress
+            wrongCount: uniqueWrongs.length
         };
-
-        this.renderSummaryStats(summaryData);
-        this.lastSummaryData = summaryData;
 
         this.setView('view-summary');
     },
