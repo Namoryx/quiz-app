@@ -218,7 +218,7 @@ a);requestAnimationFrame(function(){g(document.body)})})}var l=["material-icons"
                 이전
             </button>
             <div class="flex gap-3">
-                <button id="btn-check" class="px-8 py-3 bg-blue-600 text-white rounded-xl font-bold shadow-lg shadow-blue-200 hover:bg-blue-700 hover:-translate-y-0.5 transition active:scale-95" onclick="window.app.checkAnswer()">
+                <button id="btn-check" class="hidden px-8 py-3 bg-blue-600 text-white rounded-xl font-bold shadow-lg shadow-blue-200 hover:bg-blue-700 hover:-translate-y-0.5 transition active:scale-95">
                     정답 확인
                 </button>
                 <button id="btn-next" class="hidden px-8 py-3 bg-slate-800 text-white rounded-xl font-bold shadow-lg hover:bg-slate-900 hover:-translate-y-0.5 transition active:scale-95 flex items-center gap-2" onclick="window.app.nextQuestion()">
@@ -411,12 +411,14 @@ const app = {
     session: [],
     mode: 'idle',
     qIdx: 0,
-    answers: {}, 
-    practiceQueue: [], 
+    answers: {},
+    practiceQueue: [],
     retryQueue: [],
     batchWrongIds: [],
     timer: null,
     timeLeft: 0,
+    pendingWrongAckId: null,
+    autoAdvanceTimer: null,
     
     init: function() { },
 
@@ -546,11 +548,13 @@ const app = {
 
     goHome: function() {
         if(this.mode !== 'idle' && !confirm("현재 진행 중인 학습이 초기화됩니다. 홈으로 이동하시겠습니까?")) return;
-        
+
         // Reset state but keep DB
         this.mode = 'idle';
         this.session = [];
         this.answers = {};
+        this.pendingWrongAckId = null;
+        if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
         if(this.timer) clearInterval(this.timer);
         
         this.setView('view-start');
@@ -589,9 +593,51 @@ const app = {
         };
     },
 
+    handleOptionSelect: function(idx) {
+        const q = this.session[this.qIdx];
+        if(q.checked && this.mode === 'practice') return;
+
+        q.userAnswer = idx;
+
+        if(this.mode === 'practice') {
+            q.checked = true;
+            const isCorrect = q.options[idx].isCorrect;
+            this.pendingWrongAckId = null;
+
+            if(!isCorrect) {
+                this.batchWrongIds.push(q.id);
+                this.pendingWrongAckId = q.id;
+                if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
+            } else {
+                this.scheduleAutoAdvance(q.id);
+            }
+        }
+
+        this.renderQuestion();
+    },
+
+    scheduleAutoAdvance: function(questionId) {
+        if(this.mode !== 'practice') return;
+        if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
+
+        const isLast = (this.qIdx === this.session.length - 1);
+        this.autoAdvanceTimer = setTimeout(() => {
+            const current = this.session[this.qIdx];
+            if(!current || current.id !== questionId) return;
+            if(this.pendingWrongAckId === questionId) return;
+
+            if(isLast) {
+                this.finishBatch();
+            } else {
+                this.qIdx++;
+                this.renderQuestion();
+            }
+        }, 1200);
+    },
+
     renderQuestion: function() {
         const q = this.session[this.qIdx];
-        
+
         document.getElementById('q-seq').innerText = this.qIdx + 1;
         document.getElementById('q-id').innerText = q.id;
         document.getElementById('q-text').innerText = q.text;
@@ -602,9 +648,9 @@ const app = {
         q.options.forEach((opt, idx) => {
             const el = document.createElement('div');
             let css = "option-card w-full p-4 rounded-xl border border-slate-200 cursor-pointer flex gap-3 items-start bg-white";
-            
+
             if (q.userAnswer === idx) css += " selected";
-            
+
             if (q.checked) {
                 css += " disabled";
                 if (opt.isCorrect) css += " correct";
@@ -612,12 +658,9 @@ const app = {
             }
 
             el.className = css;
-            
+
             if (!q.checked) {
-                el.onclick = () => {
-                    q.userAnswer = idx;
-                    this.renderQuestion();
-                };
+                el.onclick = () => this.handleOptionSelect(idx);
             }
 
             const letter = String.fromCharCode(65 + idx);
@@ -655,21 +698,23 @@ const app = {
 
         btnPrev.disabled = (this.qIdx === 0);
         const isLast = (this.qIdx === this.session.length - 1);
+        const answered = q.userAnswer !== null;
 
         if(this.mode === 'practice') {
-            if(q.checked) {
-                btnCheck.classList.add('hidden');
+            btnCheck.classList.add('hidden');
+            if(answered) {
                 btnNext.classList.remove('hidden');
+                const awaitingAck = this.pendingWrongAckId === q.id;
                 if(isLast) {
-                    btnNext.innerHTML = `<span>결과 보기</span> <span class="material-symbols-outlined text-sm">flag</span>`;
+                    btnNext.innerHTML = `<span>${awaitingAck ? '확인 후 결과' : '결과 보기'}</span> <span class="material-symbols-outlined text-sm">${awaitingAck ? 'task_alt' : 'flag'}</span>`;
                     btnNext.onclick = () => this.finishBatch();
                 } else {
-                    btnNext.innerHTML = `<span>다음</span> <span class="material-symbols-outlined text-sm">arrow_forward</span>`;
+                    btnNext.innerHTML = `<span>${awaitingAck ? '확인 후 다음' : '다음'}</span> <span class="material-symbols-outlined text-sm">arrow_forward</span>`;
                     btnNext.onclick = () => this.nextQuestion();
                 }
             } else {
-                btnCheck.classList.remove('hidden');
                 btnNext.classList.add('hidden');
+                btnCheck.classList.add('hidden');
             }
         } else if(this.mode === 'exam') {
             btnCheck.classList.add('hidden');
@@ -685,6 +730,7 @@ const app = {
     },
 
     prevQuestion: function() {
+        this.pendingWrongAckId = null;
         if(this.qIdx > 0) {
             this.qIdx--;
             this.renderQuestion();
@@ -692,21 +738,14 @@ const app = {
     },
 
     nextQuestion: function() {
+        if(this.pendingWrongAckId === this.session[this.qIdx].id) {
+            this.pendingWrongAckId = null;
+        }
+        if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
         if(this.qIdx < this.session.length - 1) {
             this.qIdx++;
             this.renderQuestion();
         }
-    },
-
-    checkAnswer: function() {
-        const q = this.session[this.qIdx];
-        if(q.userAnswer === null) return alert("답을 선택해주세요.");
-        
-        q.checked = true;
-        if(!q.options[q.userAnswer].isCorrect) {
-            this.batchWrongIds.push(q.id);
-        }
-        this.renderQuestion();
     },
 
     startPractice: function() {
@@ -735,6 +774,7 @@ const app = {
         if(batchIds.length === 0) return alert("모든 문제를 마쳤습니다!");
 
         this.batchWrongIds = [];
+        this.pendingWrongAckId = null;
         this.session = batchIds.map(id => {
             const raw = this.db.find(d => d.id === id);
             return this.prepareQuestion(raw);
@@ -745,6 +785,8 @@ const app = {
     },
 
     finishBatch: function() {
+        if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
+        this.pendingWrongAckId = null;
         const uniqueWrongs = [...new Set(this.batchWrongIds)];
         this.retryQueue.unshift(...uniqueWrongs); // Re-queue wrongs immediately
         document.getElementById('summary-wrong-count').innerText = uniqueWrongs.length;
@@ -752,11 +794,15 @@ const app = {
     },
 
     nextBatch: function() {
+        if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
+        this.pendingWrongAckId = null;
         this.loadBatch();
         this.setView('view-quiz');
     },
 
     startExam: function() {
+        if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
+        this.pendingWrongAckId = null;
         this.mode = 'exam';
         this.setView('view-quiz');
         const pool = this.shuffle([...this.db]);
