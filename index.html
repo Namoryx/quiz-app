@@ -417,14 +417,19 @@ const app = {
     mode: 'idle',
     qIdx: 0,
     answers: {},
-    practiceQueue: [],
-    retryQueue: [],
+    weakQueue: [],
     batchWrongIds: [],
+    currentSession: [],
+    currentSessionPos: 0,
+    SESSION_SIZE: 10,
+    currentIndex: 0,
+    awaitingWrongContinue: false,
+    lastAnsweredIndex: null,
+    pendingWrongAckId: null,
     timer: null,
     timeLeft: 0,
-    pendingWrongAckId: null,
     autoAdvanceTimer: null,
-    
+
     init: function() { },
 
     handleFile: function(input) {
@@ -523,7 +528,12 @@ const app = {
                         id: row[colMap.id] || (i),
                         text: row[colMap.text],
                         options: optionObjects,
-                        explanation: row[colMap.exp] || "해설 없음"
+                        explanation: row[colMap.exp] || "해설 없음",
+                        meta: {
+                            correct_count: 0,
+                            wrong_count: 0,
+                            mastered: false
+                        }
                     });
                 }
             }
@@ -559,6 +569,11 @@ const app = {
         this.session = [];
         this.answers = {};
         this.pendingWrongAckId = null;
+        this.awaitingWrongContinue = false;
+        this.currentSession = [];
+        this.currentSessionPos = 0;
+        this.currentIndex = 0;
+        this.weakQueue = [];
         if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
         if(this.timer) clearInterval(this.timer);
         
@@ -577,6 +592,28 @@ const app = {
     },
 
     // --- GAME LOGIC ---
+
+    buildSessionQuestions: function() {
+        const session = [];
+
+        for (const qIndex of this.weakQueue) {
+            if (session.length >= this.SESSION_SIZE) break;
+            if (!this.db[qIndex].meta.mastered) {
+                session.push(qIndex);
+            }
+        }
+
+        while (session.length < this.SESSION_SIZE && this.currentIndex < this.db.length) {
+            if (!session.includes(this.currentIndex) && !this.db[this.currentIndex].meta.mastered) {
+                session.push(this.currentIndex);
+            }
+            this.currentIndex++;
+        }
+
+        this.currentSession = session;
+        this.currentSessionPos = 0;
+        return session.length > 0;
+    },
 
     shuffle: function(array) {
         const newArr = [...array];
@@ -598,23 +635,46 @@ const app = {
         };
     },
 
+    markWrong: function(qIndex) {
+        const meta = this.db[qIndex].meta;
+        meta.wrong_count++;
+        if (!this.weakQueue.includes(qIndex)) this.weakQueue.push(qIndex);
+    },
+
+    markCorrect: function(qIndex) {
+        const meta = this.db[qIndex].meta;
+        meta.correct_count++;
+        if (meta.wrong_count > 0 && meta.correct_count >= 1) {
+            meta.mastered = true;
+            this.weakQueue = this.weakQueue.filter(idx => idx !== qIndex);
+        }
+    },
+
     handleOptionSelect: function(idx) {
-        const q = this.session[this.qIdx];
+        const q = this.session[this.currentSessionPos];
         if(q.checked && this.mode === 'practice') return;
 
         q.userAnswer = idx;
+        this.lastAnsweredIndex = this.currentSessionPos;
 
         if(this.mode === 'practice') {
             q.checked = true;
             const isCorrect = q.options[idx].isCorrect;
+            const qIndex = this.currentSession[this.currentSessionPos];
+            const wasAwaiting = this.awaitingWrongContinue;
+            this.awaitingWrongContinue = false;
             this.pendingWrongAckId = null;
 
             if(!isCorrect) {
-                this.batchWrongIds.push(q.id);
-                this.pendingWrongAckId = q.id;
+                this.batchWrongIds.push(qIndex);
+                this.markWrong(qIndex);
+                this.awaitingWrongContinue = true;
+                this.pendingWrongAckId = qIndex;
                 if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
             } else {
-                this.scheduleAutoAdvance(q.id);
+                this.markCorrect(qIndex);
+                if(wasAwaiting) this.advanceToNextQuestion();
+                else this.scheduleAutoAdvance(qIndex);
             }
         }
 
@@ -625,25 +685,26 @@ const app = {
         if(this.mode !== 'practice') return;
         if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
 
-        const isLast = (this.qIdx === this.session.length - 1);
+        const isLast = (this.currentSessionPos === this.session.length - 1);
         this.autoAdvanceTimer = setTimeout(() => {
-            const current = this.session[this.qIdx];
-            if(!current || current.id !== questionId) return;
-            if(this.pendingWrongAckId === questionId) return;
+            const current = this.currentSession[this.currentSessionPos];
+            if(current === undefined || current !== questionId) return;
+            if(this.pendingWrongAckId === questionId || this.awaitingWrongContinue) return;
 
             if(isLast) {
-                this.finishBatch();
+                this.showMidSummary();
             } else {
-                this.qIdx++;
+                this.currentSessionPos++;
+                this.qIdx = this.currentSessionPos;
                 this.renderQuestion();
             }
         }, 1200);
     },
 
     renderQuestion: function() {
-        const q = this.session[this.qIdx];
+        const q = this.session[this.currentSessionPos];
 
-        document.getElementById('q-seq').innerText = this.qIdx + 1;
+        document.getElementById('q-seq').innerText = this.currentSessionPos + 1;
         document.getElementById('q-id').innerText = q.id;
         document.getElementById('q-text').innerText = q.text;
 
@@ -679,7 +740,7 @@ const app = {
         });
 
         // Progress
-        const pct = ((this.qIdx + 1) / this.session.length) * 100;
+        const pct = ((this.currentSessionPos + 1) / this.session.length) * 100;
         document.getElementById('progress-bar').style.width = `${pct}%`;
 
         // Explanation
@@ -701,21 +762,21 @@ const app = {
         const btnCheck = document.getElementById('btn-check');
         const btnNext = document.getElementById('btn-next');
 
-        btnPrev.disabled = (this.qIdx === 0);
-        const isLast = (this.qIdx === this.session.length - 1);
+        btnPrev.disabled = (this.currentSessionPos === 0);
+        const isLast = (this.currentSessionPos === this.session.length - 1);
         const answered = q.userAnswer !== null;
+        const awaitingAck = this.awaitingWrongContinue && this.lastAnsweredIndex === this.currentSessionPos;
 
         if(this.mode === 'practice') {
             btnCheck.classList.add('hidden');
             if(answered) {
                 btnNext.classList.remove('hidden');
-                const awaitingAck = this.pendingWrongAckId === q.id;
                 if(isLast) {
                     btnNext.innerHTML = `<span>${awaitingAck ? '확인 후 결과' : '결과 보기'}</span> <span class="material-symbols-outlined text-sm">${awaitingAck ? 'task_alt' : 'flag'}</span>`;
-                    btnNext.onclick = () => this.finishBatch();
+                    btnNext.onclick = () => awaitingAck ? this.handlePracticeContinue() : this.showMidSummary();
                 } else {
                     btnNext.innerHTML = `<span>${awaitingAck ? '확인 후 다음' : '다음'}</span> <span class="material-symbols-outlined text-sm">arrow_forward</span>`;
-                    btnNext.onclick = () => this.nextQuestion();
+                    btnNext.onclick = () => awaitingAck ? this.handlePracticeContinue() : this.nextQuestion();
                 }
             } else {
                 btnNext.classList.add('hidden');
@@ -736,28 +797,39 @@ const app = {
 
     prevQuestion: function() {
         this.pendingWrongAckId = null;
-        if(this.qIdx > 0) {
-            this.qIdx--;
+        if(this.currentSessionPos > 0) {
+            this.currentSessionPos--;
+            this.qIdx = this.currentSessionPos;
             this.renderQuestion();
         }
     },
 
     nextQuestion: function() {
-        if(this.pendingWrongAckId === this.session[this.qIdx].id) {
-            this.pendingWrongAckId = null;
-        }
+        this.awaitingWrongContinue = false;
+        this.pendingWrongAckId = null;
         if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
-        if(this.qIdx < this.session.length - 1) {
-            this.qIdx++;
+        if(this.currentSessionPos < this.session.length - 1) {
+            this.currentSessionPos++;
+            this.qIdx = this.currentSessionPos;
             this.renderQuestion();
         }
     },
 
     startPractice: function() {
         this.mode = 'practice';
+        this.currentIndex = 0;
+        this.awaitingWrongContinue = false;
+        this.lastAnsweredIndex = null;
+        this.weakQueue = [];
+        this.batchWrongIds = [];
+        this.pendingWrongAckId = null;
+        this.db.forEach(q => {
+            if(!q.meta) q.meta = {};
+            q.meta.correct_count = 0;
+            q.meta.wrong_count = 0;
+            q.meta.mastered = false;
+        });
         this.setView('view-quiz');
-        this.practiceQueue = this.shuffle(this.db.map(q => q.id));
-        this.retryQueue = [];
         this.loadBatch();
         this.updateStatus("Practice", "Batch");
     },
@@ -791,20 +863,9 @@ const app = {
     },
 
     loadBatch: function() {
-        const BATCH_SIZE = 10;
-        const batchIds = [];
+        const built = this.buildSessionQuestions();
 
-        // Retries first
-        const retrySlice = this.retryQueue.splice(0, BATCH_SIZE);
-        batchIds.push(...retrySlice);
-
-        // Fill with new
-        const need = BATCH_SIZE - batchIds.length;
-        if(need > 0 && this.practiceQueue.length > 0) {
-            batchIds.push(...this.practiceQueue.splice(0, need));
-        }
-
-        if(batchIds.length === 0) {
+        if(!built) {
             this.setSummaryState(true);
             this.setView('view-summary');
             return false;
@@ -812,48 +873,74 @@ const app = {
 
         this.batchWrongIds = [];
         this.pendingWrongAckId = null;
-        this.session = batchIds.map(id => {
-            const raw = this.db.find(d => d.id === id);
-            return this.prepareQuestion(raw);
-        });
+        this.awaitingWrongContinue = false;
+        this.session = this.currentSession.map(idx => this.prepareQuestion(this.db[idx]));
 
+        this.currentSessionPos = 0;
         this.qIdx = 0;
         this.renderQuestion();
         return true;
     },
 
     finishBatch: function() {
-        if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
-        this.pendingWrongAckId = null;
-        const uniqueWrongs = [...new Set(this.batchWrongIds)];
-        this.retryQueue.unshift(...uniqueWrongs); // Re-queue wrongs immediately
-        this.setSummaryState(false);
-        document.getElementById('summary-wrong-count').innerText = uniqueWrongs.length;
-        this.setView('view-summary');
+        this.showMidSummary();
     },
 
     nextBatch: function() {
         if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
         this.pendingWrongAckId = null;
-        this.loadBatch();
-        this.setView('view-quiz');
+        this.awaitingWrongContinue = false;
+        const loaded = this.loadBatch();
+        if(loaded) {
+            this.setView('view-quiz');
+        }
+    },
+
+    advanceToNextQuestion: function() {
+        this.currentSessionPos++;
+        this.qIdx = this.currentSessionPos;
+
+        if(this.currentSessionPos >= this.session.length) {
+            this.showMidSummary();
+            return;
+        }
+
+        this.renderQuestion();
+    },
+
+    handlePracticeContinue: function() {
+        if(!this.awaitingWrongContinue) return;
+        this.awaitingWrongContinue = false;
+        this.pendingWrongAckId = null;
+        this.advanceToNextQuestion();
+    },
+
+    showMidSummary: function() {
+        if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
+        const uniqueWrongs = [...new Set(this.batchWrongIds)];
+        this.setSummaryState(false);
+        document.getElementById('summary-wrong-count').innerText = uniqueWrongs.length;
+        this.setView('view-summary');
     },
 
     startExam: function() {
         if(this.autoAdvanceTimer) clearTimeout(this.autoAdvanceTimer);
         this.pendingWrongAckId = null;
+        this.awaitingWrongContinue = false;
         this.mode = 'exam';
         this.setView('view-quiz');
         const pool = this.shuffle([...this.db]);
         const selected = pool.slice(0, 60);
         this.session = selected.map(raw => this.prepareQuestion(raw));
+        this.currentSession = this.session.map((_, idx) => idx);
+        this.currentSessionPos = 0;
         this.qIdx = 0;
         this.startTimer();
         this.renderQuestion();
     },
 
     startTimer: function() {
-        this.timeLeft = 120 * 60; 
+        this.timeLeft = 120 * 60;
         if(this.timer) clearInterval(this.timer);
         this.updateTimerDisplay();
         this.timer = setInterval(() => {
@@ -905,9 +992,11 @@ const app = {
 
         if(wrongs.length === 0) return alert("틀린 문제가 없습니다.");
 
-        this.mode = 'practice'; 
+        this.mode = 'practice';
         this.session = wrongs;
         this.session.forEach(q => q.checked = true);
+        this.currentSession = this.session.map((_, idx) => idx);
+        this.currentSessionPos = 0;
         this.qIdx = 0;
         this.setView('view-quiz');
         this.renderQuestion();
@@ -935,7 +1024,15 @@ const app = {
 };
 
 window.app = app;
-window.addEventListener('load', () => app.init());
+window.addEventListener('load', () => {
+    app.init();
+    document.addEventListener('keydown', (e) => {
+        if(app.mode === 'practice' && app.awaitingWrongContinue) {
+            e.preventDefault();
+            app.handlePracticeContinue();
+        }
+    });
+});
 </script>
 
 </body></html>
